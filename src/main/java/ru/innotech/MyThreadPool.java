@@ -3,6 +3,7 @@ package ru.innotech;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -12,22 +13,19 @@ public class MyThreadPool {
     List<MyThread> threadPoll;   // очередь потоков
     final Lock lockThread;  // для потоков
     final Condition conditionThread;
-    final Lock lockAwait;   // для awaitTermination
-    final Condition conditionAwait;
     boolean stopThreads;
+    final CountDownLatch countDownLatch; // для awaitTermination
 
 
     public MyThreadPool(int capacity) { // конструктор с ёмкостью
         if (capacity < 1) throw new IllegalArgumentException("Размер пула потоков не может быть меньше одного");
         lockThread = new ReentrantLock();
         conditionThread = lockThread.newCondition();
-        lockAwait = new ReentrantLock();
-        conditionAwait = lockAwait.newCondition();
         stopThreads = false;
+        countDownLatch = new CountDownLatch(capacity);
 
         threadPoll = new ArrayList<>(capacity);
         for (int i = 0; i < capacity; i++) { // создаём потоки
-            int w = i;
             MyThread myThread = new MyThread(i);
             threadPoll.add(myThread);
             myThread.start();
@@ -35,11 +33,9 @@ public class MyThreadPool {
     }
     class MyThread extends Thread {
         int number; // номер потока для визуализации
-        boolean flagStop;   // признак того, что поток остановлен
 
         public MyThread(int number) {
             this.number = number;
-            this.flagStop = false;
         }
 
         @Override
@@ -54,10 +50,7 @@ public class MyThreadPool {
                     }
                 } catch (InterruptedException e) {
                     System.out.println("Остановка потока " + number);
-                    flagStop = true;
-                    lockAwait.lock();
-                    conditionAwait.signal(); // для awaitTermination
-                    lockAwait.unlock();
+                    countDownLatch.countDown(); // для awaitTermination
                     return;
                 }
                 finally {
@@ -90,32 +83,19 @@ public class MyThreadPool {
     }
 
     public void shutdown() {
-        System.out.println("Выполнен метод shutdown");
+        System.out.println("Вызван метод shutdown");
         stopThreads = true;
         for(MyThread t : threadPoll)
             t.interrupt();
     }
-    public boolean checkStopThread() { // вернёт true, если все потоки остановлены
-        for(MyThread t : threadPoll)
-            if (!t.flagStop) return false;
-        return true;
-    }
 
     public void awaitTermination() {
-        System.out.println("Выполнен метод awaitTermination");
+        System.out.println("Вызван метод awaitTermination");
         shutdown();
-        lockAwait.lock();
         try {
-            while (!checkStopThread()) {
-                System.out.println("Ждём...");
-                conditionAwait.await();
-            }
+            countDownLatch.await(); // ждём пока отработают все потоки
         } catch (InterruptedException e) {
-            return;
+            e.printStackTrace();
         }
-        finally {
-            lockAwait.unlock();
-        }
-
     }
 }
