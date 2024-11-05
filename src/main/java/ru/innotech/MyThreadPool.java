@@ -9,61 +9,76 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public class MyThreadPool {
     List<Runnable> tasks = new LinkedList<>(); // очередь задач на исполнение
-    List<Thread> threadPoll;   // очередь потоков
-    final public Lock monitorGetRunnable = new ReentrantLock();
-    final Lock lockThread;
-    final Condition condition;
+    List<MyThread> threadPoll;   // очередь потоков
+    final Lock lockThread;  // для потоков
+    final Condition conditionThread;
+    final Lock lockAwait;   // для awaitTermination
+    final Condition conditionAwait;
     boolean stopThreads;
 
 
     public MyThreadPool(int capacity) { // конструктор с ёмкостью
-        if (capacity < 1 ) throw new IllegalArgumentException("Размер пула потоков не может быть меньше одного");
+        if (capacity < 1) throw new IllegalArgumentException("Размер пула потоков не может быть меньше одного");
         lockThread = new ReentrantLock();
-        condition = lockThread.newCondition();
+        conditionThread = lockThread.newCondition();
+        lockAwait = new ReentrantLock();
+        conditionAwait = lockAwait.newCondition();
         stopThreads = false;
 
         threadPoll = new ArrayList<>(capacity);
-        for(int i = 0; i < capacity; i++) { // создаём потоки
+        for (int i = 0; i < capacity; i++) { // создаём потоки
             int w = i;
-            threadPoll.add(new Thread(()->
-            {
-                while(true) {
-                    try {
-                        System.out.println("Поток " + w);
-                        lockThread.lockInterruptibly();
-                        try {
-                            while (tasks.isEmpty()) {
-                                System.out.println("Поток " + w + ": переходим в ожидание");
-                                condition.await();
-                            }
-                        } finally {
-                            lockThread.unlock();
-                        }
-                        Runnable runnable = getRunnable();
-                        if (runnable != null) {
-                            System.out.println("Поток " + w + ": исполняем задачу");
-                            runnable.run();   // запускаем задачу на исполнение
-                        }
-                    } catch (InterruptedException e) {
-                        System.out.println("Остановка потока " + w);
-                        return;
-                    }
-                }
-            }));}
-        for (Thread r : threadPoll) {   // запускаем потоки
-            r.start();
+            MyThread myThread = new MyThread(i);
+            threadPoll.add(myThread);
+            myThread.start();
         }
     }
+    class MyThread extends Thread {
+        int number; // номер потока для визуализации
+        boolean flagStop;   // признак того, что поток остановлен
 
+        public MyThread(int number) {
+            this.number = number;
+            this.flagStop = false;
+        }
+
+        @Override
+        public void run() {
+            while(true) {
+                System.out.println("Поток " + number);
+                lockThread.lock(); // не используем lockInterruptibly, иначе есть риск, что после вызова interrupt() мы не проверим, есть ли задачи в очереди
+                try {
+                    while (tasks.isEmpty()) {
+                        System.out.println("Поток " + number + ": переходим в ожидание");
+                        conditionThread.await();  // если уже вызван interrupt(), то здесь мы и остановим поток
+                    }
+                } catch (InterruptedException e) {
+                    System.out.println("Остановка потока " + number);
+                    flagStop = true;
+                    lockAwait.lock();
+                    conditionAwait.signal(); // для awaitTermination
+                    lockAwait.unlock();
+                    return;
+                }
+                finally {
+                    lockThread.unlock();
+                }
+                Runnable runnable = getRunnable();
+                if (runnable != null) {
+                    System.out.println("Поток " + number + ": исполняем задачу");
+                    runnable.run();   // запускаем задачу на исполнение
+                }
+            }
+        }
+    }
     public void execute(Runnable command) {    // добавление потока в очередь и запуск на исполнение, если в пуле есть место
         if(stopThreads) throw new IllegalStateException("Пул потоков больше не принимает задачи");
         if (command == null) throw new NullPointerException();
 
-        System.out.println("Пытаемся добавить задание");
         lockThread.lock();
         tasks.add(command); // добавляем задачу в очередь на исполнение
         System.out.println("Задание добавлено");
-        condition.signal(); // пробуждаем один из ждущих потоков, чтобы он мог забрать задачу на исполнение
+        conditionThread.signal(); // пробуждаем один из ждущих потоков, чтобы он мог забрать задачу на исполнение
         lockThread.unlock();
     }
 
@@ -75,9 +90,32 @@ public class MyThreadPool {
     }
 
     public void shutdown() {
+        System.out.println("Выполнен метод shutdown");
         stopThreads = true;
-        for(Thread t : threadPoll)
+        for(MyThread t : threadPoll)
             t.interrupt();
     }
+    public boolean checkStopThread() { // вернёт true, если все потоки остановлены
+        for(MyThread t : threadPoll)
+            if (!t.flagStop) return false;
+        return true;
+    }
 
+    public void awaitTermination() {
+        System.out.println("Выполнен метод awaitTermination");
+        shutdown();
+        lockAwait.lock();
+        try {
+            while (!checkStopThread()) {
+                System.out.println("Ждём...");
+                conditionAwait.await();
+            }
+        } catch (InterruptedException e) {
+            return;
+        }
+        finally {
+            lockAwait.unlock();
+        }
+
+    }
 }
